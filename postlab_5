@@ -1,0 +1,328 @@
+; ------------------------------------------------------------------------------
+; DATOS Y ENCABEZADO
+;-------------------------------------------------------------------------------
+    
+; Archivo:			 lab_5.s
+; Dispositivo:			 PIC16F887
+; Autor:			 GUSTABO CÓRDOVA 
+; Compilador:			 pic-as (v2.30), MPLABX v5.40
+; Programa:		         Displays Simultáneos / Multiplexados
+; Hardware:			 8 leds, 2 pushbuttons
+; Creado:			 18 FEB, 2023
+; Última modificación:		 25 FEB, 2023
+
+    PROCESSOR 16F887
+    #include <xc.inc>
+    
+; ------------------------------------------------------------------------------
+; CONFIGURACIÓN DEL PIC
+;-------------------------------------------------------------------------------
+
+; CONFIG 1
+  CONFIG FOSC = INTRC_NOCLKOUT	    // Oscilador interno
+  CONFIG WDTE = OFF		    // WDT disabled (reinicio repetitivo de pic)
+  CONFIG PWRTE = ON		    // PWRT enabled (espera de 72ms al iniciar)
+  CONFIG MCLRE = OFF		    // El pin de MCLR se utiliza como I/O
+  CONFIG CP = OFF		    // Sin protección de código
+  CONFIG CPD = OFF		    // Sin protección de datos
+  
+  CONFIG BOREN = OFF		    // Sin reinicio cuando el voltaje de alimentación baja de 4V
+  CONFIG IESO = OFF		    // Reinicio sin cambio de reloj de interno a externo
+  CONFIG FCMEN = OFF		    // Cambio de reloj externo a interno en caso de fallo
+  CONFIG LVP = ON		    // Programación en bajo voltaje permitida
+  
+; CONFIG 2
+  CONFIG WRT = OFF		    // Protección de autoescritura por el programa desactivada
+  CONFIG BOR4V = BOR40V		    // Reinicio abajo de 4V, (BOR21V-2.1V)
+
+; ------------------------------------------------------------------------------
+; MACROS
+;-------------------------------------------------------------------------------
+  
+ reset_TMR0 macro
+    BANKSEL TMR0
+    movlw 100		; se carga el valor inicial al acumulador
+    movwf TMR0		; se carga el valor inicial al registro TMR0
+    bcf T0IF		; se limpia la bandera de overflow del registro TMR0
+    endm
+  
+; ------------------------------------------------------------------------------
+; VARIABLES
+;-------------------------------------------------------------------------------
+  
+PSECT udata_shr
+ 
+    W_TEMP:	    DS 1
+    STATUS_TEMP:    DS 1
+    
+    ; Estas variables sirven para poder multiplexear todos los displays en un solo puerto
+    value:	    DS 1
+    flags:	    DS 1
+    nibbles:	    DS 2
+    display_val:    DS 3
+    
+    ; Estas variables sirven para poder representar el número del contador binario en los displays en formato decimal
+    unidad:	    DS 1
+    decena:	    DS 1
+    centena:	    DS 1
+    
+
+; ------------------------------------------------------------------------------
+; VECTOR RESET y de INTERRUPCIÓN
+;-------------------------------------------------------------------------------
+PSECT resetVec, class = CODE, abs, delta = 2
+ORG 00h						; posición 0000h destinada para el reset
+
+resetVec:
+    PAGESEL main
+    goto main
+
+ORG 04h						; posición para el inicio de las interrupciones
+push:
+    movwf	W_TEMP
+    swapf	STATUS, W
+    movwf	STATUS_TEMP
+	
+isr:
+    btfsc	RBIF
+    call	int_iocb	
+    BTFSC	T0IF
+    call	int_TMR0
+	
+POP:
+    SWAPF	STATUS_TEMP, W
+    MOVWF	STATUS
+    SWAPF	W_TEMP, F	; / 1
+    SWAPF	W_TEMP, W	; / 0 
+    retfie
+ ;-------------------------------------------------------------------------------------------------------------------PSECT code, delta=2, abs
+
+; ------------------------------------------------------------------------------
+; SUBRITUNAS DE INTERRUPCIÓN
+;-------------------------------------------------------------------------------
+	
+int_iocb:
+    BANKSEL	PORTB
+    btfss	PORTB, 0
+    incf	PORTA
+    btfss	PORTB, 1
+    decf	PORTA
+    bcf		RBIF
+    return
+
+int_TMR0:
+    call	display_sel
+		reset_TMR0
+    return
+    
+display_sel:
+    bcf		PORTD, 0
+    bcf		PORTD, 1
+    bcf		PORTD, 2
+    btfsc	flags, 1
+    goto	disp_2
+    btfsc	flags, 0
+    goto	disp_0
+    goto	disp_1
+    return
+    
+disp_0:
+    movf	display_val, W
+    movwf	PORTC
+    bsf		PORTD, 1
+    bcf		flags, 0
+    bsf		flags, 1
+    return
+    
+disp_1:
+    movf	display_val+1, W
+    movwf	PORTC
+    bsf		PORTD, 0
+    bsf		flags, 0
+    return
+    
+disp_2:
+    movf	display_val+2, W
+    movwf	PORTC
+    bsf		PORTD, 2
+    bcf		flags, 0
+    bcf		flags, 1
+    return
+    
+
+; ------------------------------------------------------------------------------
+; TABLA PARA LOS DISPLAYS
+;-------------------------------------------------------------------------------
+    
+PSECT table_7, class = CODE, abs, delta = 2
+ORG 100h				    ; posición para el código
+table_7:
+	clrf		    PCLATH
+	bsf		    PCLATH, 0		    ; 0100h
+	andlw		    0x0F
+	addwf		    PCL
+	RETLW		    00111111B		    ; 0
+	RETLW		    00000110B		    ; 1
+	RETLW		    01011011B		    ; 2
+	RETLW		    01001111B		    ; 3
+	RETLW		    01100110B		    ; 4
+	RETLW		    01101101B		    ; 5
+	RETLW		    01111101B		    ; 6
+	RETLW		    00000111B		    ; 7
+	RETLW		    01111111B		    ; 8
+	RETLW		    01101111B		    ; 9
+	RETLW		    01110111B		    ; A
+	RETLW		    01111100B		    ; B
+	RETLW		    00111001B		    ; C
+	RETLW		    01011110B		    ; D
+	RETLW		    01111001B		    ; E
+	RETLW		    01110001B		    ; F
+ 
+; ------------------------------------------------------------------------------
+; MAIN
+;-------------------------------------------------------------------------------
+
+main:
+	call config_clock	 ; configuración del clock
+	call config_TMR0	 ; configuración del TMR0
+	call config_ports	 ; configuración de los puertos
+	call config_IOCRB	 ; configuración de las interrupciones
+	call config_int_enable	 ; activación de las interrupciones
+	
+	BANKSEL	PORTA		 ; banco donde está el ANSEL
+	
+
+; ------------------------------------------------------------------------------
+; LOOP
+;-------------------------------------------------------------------------------
+ 
+loop:	
+	movf     PORTA, W	    ; el valor del PORTA se mueve a W
+	MOVWF    value		    ; se mueve W a "value"
+	call     display	    ; llamamos a la variable "display"
+	
+	clrf    unidad
+	clrf    decena
+	clrf    centena
+	
+	call    conv_centena
+	call    conv_decena	
+	call    conv_unidad
+	
+	goto    loop		    ; loop forever
+
+	
+; ------------------------------------------------------------------------------
+; SUBRITUNAS
+;-------------------------------------------------------------------------------
+
+config_IOCRB:
+	BANKSEL	    TRISA
+	bsf	    IOCB, 0
+	bsf	    IOCB, 1	    ; los bits 0 y 1 del puerto B se colocan como interrupt on change
+	
+    
+	BANKSEL	    PORTA
+	movf	    PORTB, W
+	bcf	    RBIF
+	return
+	
+config_ports:
+	BANKSEL	    ANSEL
+	clrf	    ANSEL
+	clrf	    ANSELH
+
+	BANKSEL	    TRISA
+	clrf	    TRISA
+	clrf	    TRISC
+	clrf	    TRISD
+
+	bsf	    TRISB0
+	bsf	    TRISB1
+	
+	BCF	    OPTION_REG, 7
+	
+	BANKSEL	    PORTA
+	clrf	    PORTA
+	clrf	    PORTC
+	clrf	    PORTD
+	clrf	    flags
+	return
+
+config_int_enable:
+	bsf	    GIE
+	bsf	    RBIE
+	bcf	    RBIF
+	
+	bsf	    T0IE 
+	bcf	    T0IF
+	return
+	
+config_clock:
+	BANKSEL	    OSCCON
+	bcf	    IRCF2
+	bsf	    IRCF1
+	bcf	    IRCF0
+	bsf	    SCS
+	return
+	
+config_TMR0:
+	BANKSEL	    TRISA
+	bcf	    T0CS
+	bcf	    PSA
+	bcf	    PS2
+	bcf	    PS1
+	bcf	    PS0
+	
+	reset_TMR0
+	return
+
+display:
+	movf	    decena, W		 ; se mueve el valor de decenas a W
+	call	    table_7		 ; llamamos a la tabla 
+	movwf	    display_val		 ; se mueve a la variable "display_val" en su primera posición
+
+	movf	    centena, W
+	call	    table_7
+	movwf	    display_val +1
+	
+
+	movf	    unidad, W
+	call	    table_7
+	movwf	    display_val +2
+	
+	return
+	
+conv_centena:
+	movlw	    100		    ; Se envía el valor de 100 a W
+	subwf	    value, F	    ; Se resta el valor del 100 a W
+	incf	    centena	    ; Las centenas incrementan
+	btfsc	    STATUS, 0	    ; Se verifica si no hubo "borrow" 
+	goto	    $-4		    ; En caso no, la resta se hace de nuevo
+	decf	    centena	    ; Termina la subrutina
+	movlw	    100
+	addwf	    value, F
+	return
+
+conv_decena:
+	movlw	    10
+	subwf	    value, F 
+	incf	    decena
+	btfsc	    STATUS, 0
+	goto	    $-4
+	decf	    decena
+	movlw	    10
+	addwf	    value, F
+	return
+
+conv_unidad:
+	movlw	    1
+	subwf	    value, F 
+	incf	    unidad
+	btfsc	    STATUS, 0
+	goto	    $-4
+	decf	    unidad
+	movlw	    1
+	addwf	    value, F
+	return   
+END
